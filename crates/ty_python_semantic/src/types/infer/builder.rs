@@ -72,12 +72,11 @@ use crate::types::diagnostic::{
     UNRESOLVED_GLOBAL, UNRESOLVED_REFERENCE, UNSUPPORTED_DYNAMIC_BASE, UNSUPPORTED_OPERATOR,
     UNUSED_AWAITABLE, hint_if_stdlib_attribute_exists_on_other_versions,
     report_attempted_protocol_instantiation, report_bad_dunder_set_call,
-    report_call_to_abstract_method, report_cannot_pop_required_field_on_typed_dict,
-    report_conflicting_metaclass_from_bases, report_instance_layout_conflict,
-    report_invalid_assignment, report_invalid_attribute_assignment,
-    report_invalid_class_match_pattern, report_invalid_exception_caught,
-    report_invalid_exception_cause, report_invalid_exception_raised,
-    report_invalid_exception_tuple_caught, report_invalid_key_on_typed_dict,
+    report_call_to_abstract_method, report_conflicting_metaclass_from_bases,
+    report_instance_layout_conflict, report_invalid_assignment,
+    report_invalid_attribute_assignment, report_invalid_class_match_pattern,
+    report_invalid_exception_caught, report_invalid_exception_cause,
+    report_invalid_exception_raised, report_invalid_exception_tuple_caught,
     report_invalid_type_checking_constant,
     report_match_pattern_against_non_runtime_checkable_protocol,
     report_match_pattern_against_typed_dict, report_possibly_missing_attribute,
@@ -115,12 +114,14 @@ use crate::{AnalysisSettings, Db, FxIndexSet, Program};
 mod annotation_expression;
 mod binary_expressions;
 mod class;
+mod dict;
 mod function;
 mod imports;
 mod named_tuple;
 mod paramspec_validation;
 mod subscript;
 mod type_expression;
+mod typed_dict;
 mod typevar;
 
 use super::comparisons::{self, BinaryComparisonVisitor};
@@ -2209,6 +2210,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             | Type::AlwaysFalsy
             | Type::TypeIs(_)
             | Type::TypeGuard(_)
+            | Type::TypedDictTop
             | Type::TypedDict(_)
             | Type::NewTypeInstance(_) => {
                 // We may infer the value type multiple times with distinct type context during
@@ -4822,6 +4824,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 | Type::BoundSuper(_)
                 | Type::TypeIs(_)
                 | Type::TypeGuard(_)
+                | Type::TypedDictTop
                 | Type::TypedDict(_)
                 | Type::NewTypeInstance(_) => None,
             }
@@ -5117,6 +5120,12 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             })
             .flatten()
             .collect::<Vec<_>>();
+        // Only specialize parameter types from the call's expected return type when there is a
+        // single candidate overload. Otherwise one overload's return type can "poison" the
+        // argument context for another; e.g. when inferring `dt.get(key, {"x": 0})`, using the
+        // assignment target to reverse-specialize multiple overloads can force the default
+        // argument toward `Unknown` instead of letting it infer from `{"x": 0}`.
+        let specialize_parameter_types_from_return_tcx = overloads_with_binding.len() == 1;
 
         // Each type is a valid independent inference of the given argument, and we may require
         // different permutations of argument types to correctly perform argument expansion during
@@ -5175,7 +5184,9 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     let mut builder =
                         SpecializationBuilder::new(db, generic_context.inferable_typevars(db));
 
-                    if let Some(declared_return_ty) = call_expression_tcx.annotation {
+                    if specialize_parameter_types_from_return_tcx
+                        && let Some(declared_return_ty) = call_expression_tcx.annotation
+                    {
                         let _ = builder.infer_reverse(
                             &constraints,
                             declared_return_ty,
@@ -6753,41 +6764,13 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             arguments,
         } = call_expression;
 
-        // Fast-path dict(...) in TypedDict context: infer keyword values against fields,
-        // then validate and return the TypedDict type.
-        if let Some(tcx) = call_expression_tcx.annotation
-            && let Some(typed_dict) = tcx
-                .filter_union(self.db(), Type::is_typed_dict)
-                .as_typed_dict()
-            && callable_type
-                .as_class_literal()
-                .is_some_and(|class_literal| class_literal.is_known(self.db(), KnownClass::Dict))
-            && arguments.args.is_empty()
-            && arguments
-                .keywords
-                .iter()
-                .all(|keyword| keyword.arg.is_some())
+        if callable_type
+            .as_class_literal()
+            .is_some_and(|class_literal| class_literal.is_known(self.db(), KnownClass::Dict))
+            && let Some(ty) =
+                self.infer_keyword_only_dict_call(func, arguments, call_expression_tcx)
         {
-            let items = typed_dict.items(self.db());
-            for keyword in &arguments.keywords {
-                if let Some(arg_name) = &keyword.arg {
-                    let value_tcx = items
-                        .get(arg_name.id.as_str())
-                        .map(|field| TypeContext::new(Some(field.declared_ty)))
-                        .unwrap_or_default();
-                    self.infer_expression(&keyword.value, value_tcx);
-                }
-            }
-
-            validate_typed_dict_constructor(
-                &self.context,
-                typed_dict,
-                arguments,
-                func.as_ref().into(),
-                |expr| self.expression_type(expr),
-            );
-
-            return Type::TypedDict(typed_dict);
+            return ty;
         }
 
         // Handle 3-argument `type(name, bases, dict)`.
@@ -6800,6 +6783,36 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         // Handle `typing.NamedTuple(typename, fields)` and `collections.namedtuple(typename, field_names)`.
         if let Some(namedtuple_kind) = NamedTupleKind::from_type(self.db(), callable_type) {
             return self.infer_namedtuple_call_expression(call_expression, None, namedtuple_kind);
+        }
+
+        // TypedDict method specialization: for known-key calls like `td.get("key")`, replace
+        // the generic callable with a specialized signature that encodes the field type.
+        let mut callable_type = callable_type;
+        if let ast::Expr::Attribute(ast::ExprAttribute { value, attr, .. }) = func.as_ref() {
+            let value_type = self.expression_type(value);
+
+            if let Type::TypedDict(typed_dict_ty) = value_type
+                && matches!(attr.id.as_str(), "pop" | "setdefault")
+                && !arguments.args.is_empty()
+                && let Some(ty) = self.check_typed_dict_pop_or_setdefault_call(
+                    typed_dict_ty,
+                    attr.id.as_str(),
+                    arguments,
+                )
+            {
+                return ty;
+            }
+
+            if matches!(attr.id.as_str(), "get" | "pop" | "setdefault")
+                && let Some(specialized_callable) = self
+                    .specialize_typed_dict_known_key_method_call(
+                        value_type,
+                        attr.id.as_str(),
+                        arguments,
+                    )
+            {
+                callable_type = specialized_callable;
+            }
         }
 
         // We don't call `Type::try_call`, because we want to perform type inference on the
@@ -6862,57 +6875,6 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 );
             }
             return Type::unknown();
-        }
-
-        // Special handling for `TypedDict` method calls
-        if let ast::Expr::Attribute(ast::ExprAttribute { value, attr, .. }) = func.as_ref() {
-            let value_type = self.expression_type(value);
-
-            if let Type::TypedDict(typed_dict_ty) = value_type
-                && matches!(attr.id.as_str(), "pop" | "setdefault")
-                && !arguments.args.is_empty()
-
-                // Validate the key argument for `TypedDict` methods
-                && let Some(first_arg) = arguments.args.first()
-                    && let ast::Expr::StringLiteral(ast::ExprStringLiteral {
-                        value: key_literal,
-                        ..
-                    }) = first_arg
-            {
-                let key = key_literal.to_str();
-                let items = typed_dict_ty.items(self.db());
-
-                // Check if key exists
-                if let Some((_, field)) = items
-                    .iter()
-                    .find(|(field_name, _)| field_name.as_str() == key)
-                {
-                    // Key exists - check if it's a `pop()` on a required field
-                    if attr.id.as_str() == "pop" && field.is_required() {
-                        report_cannot_pop_required_field_on_typed_dict(
-                            &self.context,
-                            first_arg.into(),
-                            Type::TypedDict(typed_dict_ty),
-                            key,
-                        );
-                        return Type::unknown();
-                    }
-                } else {
-                    // Key not found, report error with suggestion and return early
-                    let key_ty = Type::string_literal(self.db(), key);
-                    report_invalid_key_on_typed_dict(
-                        &self.context,
-                        first_arg.into(),
-                        first_arg.into(),
-                        Type::TypedDict(typed_dict_ty),
-                        None,
-                        key_ty,
-                        items,
-                    );
-                    // Return `Unknown` to prevent the overload system from generating its own error
-                    return Type::unknown();
-                }
-            }
         }
 
         if let Type::FunctionLiteral(function) = callable_type {
@@ -8448,6 +8410,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 | Type::BoundSuper(_)
                 | Type::TypeIs(_)
                 | Type::TypeGuard(_)
+                | Type::TypedDictTop
                 | Type::TypedDict(_)
                 | Type::NewTypeInstance(_),
             ) => fallback_unary_expression_type(),

@@ -936,6 +936,25 @@ impl KnownClass {
         ))
     }
 
+    /// Return a read-only projection for top-materialized instances of mutable container classes.
+    ///
+    /// This lets member lookup resolve observer methods through a read-only supertype while
+    /// preserving the original mutable type for writes.
+    pub(crate) fn top_materialized_readonly_projection<'t, 'db, T>(
+        self,
+        db: &'db dyn Db,
+        specialization: T,
+    ) -> Option<ClassType<'db>>
+    where
+        T: Into<Cow<'t, [Type<'db>]>>,
+        'db: 't,
+    {
+        match self {
+            KnownClass::Dict => KnownClass::Mapping.to_specialized_class_type(db, specialization),
+            _ => None,
+        }
+    }
+
     /// Lookup a [`KnownClass`] in typeshed and return a [`Type`]
     /// representing all possible instances of the generic class with a specialization.
     ///
