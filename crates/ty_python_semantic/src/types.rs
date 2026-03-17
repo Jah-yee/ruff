@@ -1072,7 +1072,7 @@ impl<'db> Type<'db> {
     /// This is the case for any type which may contain types in non-covariant position within it,
     /// e.g., nominal instances of a generic class, or callables.
     pub(crate) fn may_prefer_declared_type(self, db: &'db dyn Db) -> bool {
-        self.class_specialization(db).is_some() || self.is_callable_type()
+        self.class_specialization(db).is_some() || self.expand_eagerly(db).is_callable_type()
     }
 
     /// Returns the top materialization (or upper bound materialization) of this type, which is the
@@ -1859,14 +1859,14 @@ impl<'db> Type<'db> {
 
                             f(parameter.annotated_type(), variance);
 
-                            visitor.visit(self, || {
+                            visitor.visit(parameter.annotated_type(), || {
                                 parameter
                                     .annotated_type()
                                     .visit_specialization_impl(db, variance, f, visitor);
                             });
                         }
 
-                        visitor.visit(self, || {
+                        visitor.visit(signature.return_ty, || {
                             signature
                                 .return_ty
                                 .visit_specialization_impl(db, polarity, f, visitor);

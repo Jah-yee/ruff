@@ -688,6 +688,11 @@ We also prefer the declared type of `Callable` parameters, which are in contrava
 ```py
 from typing import Callable
 
+type AnyToBool = Callable[[Any], bool]
+
+def wrap[**P, T](f: Callable[P, T]) -> Callable[P, T]:
+    return f
+
 def make_callable[T](x: T) -> Callable[[T], bool]:
     raise NotImplementedError
 
@@ -697,12 +702,18 @@ def maybe_make_callable[T](x: T) -> Callable[[T], bool] | None:
 x1: Callable[[Any], bool] = make_callable(0)
 reveal_type(x1)  # revealed: (Any, /) -> bool
 
-x2: Callable[[list[Any]], bool] = make_callable([0])
-reveal_type(x2)  # revealed: (list[Any], /) -> bool
+x2: AnyToBool = make_callable(0)
+reveal_type(x2)  # revealed: (Any, /) -> bool
 
-x3: Callable[[Any], bool] | None = maybe_make_callable(0)
+x3: Callable[[list[Any]], bool] = make_callable([0])
+reveal_type(x3)  # revealed: (list[Any], /) -> bool
+
+x4: Callable[[Any], bool] = wrap(make_callable(0))
+reveal_type(x4)  # revealed: (Any, /) -> bool
+
+x5: Callable[[Any], bool] | None = maybe_make_callable(0)
 # TODO: Better constraint solver.
-reveal_type(x3)  # revealed: ((int, /) -> bool) | None
+reveal_type(x5)  # revealed: ((int, /) -> bool) | None
 ```
 
 ## Declared type preference sees through subtyping

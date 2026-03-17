@@ -2468,6 +2468,14 @@ impl<'db> SpecializationBuilder<'db> {
             return Ok(());
         }
 
+        // Perform inference for callable types in the forward direction, as they are both
+        // instances of `Callable`.
+        if formal.expand_eagerly(self.db).is_callable_type()
+            && actual.expand_eagerly(self.db).is_callable_type()
+        {
+            return self.infer_map_impl(constraints, actual, formal, polarity, f, seen);
+        }
+
         // Assign each type variable on the formal type to a unique synthetic type variable.
         let type_mapping = TypeMapping::UniqueSpecialization {
             specialization: RefCell::new(Vec::new()),
@@ -2494,7 +2502,7 @@ impl<'db> SpecializationBuilder<'db> {
             builder.into_type_mappings()
         };
 
-        // If there are no forward type mappings, try the other direction.
+        // If there are no forward type mappings, try the forward direction.
         //
         // This is the base case for when `actual` is an inferable type variable.
         if forward_type_mappings.is_empty() {
