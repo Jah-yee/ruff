@@ -531,6 +531,24 @@ def _(dt: dict[str, Any], key: str):
     reveal_type(x8)  # revealed: Any
 ```
 
+The declared result type can still specialize generic parameters across multiple overloads:
+
+```py
+from typing import overload
+
+@overload
+def wrap[T](x: dict[str, T]) -> list[T]: ...
+@overload
+def wrap[T](x: list[T]) -> list[T]: ...
+def wrap[T](x: dict[str, T] | list[T]) -> list[T]:
+    return list(x.values()) if isinstance(x, dict) else x
+
+def f() -> list[float]:
+    return wrap({"a": 1})
+
+reveal_type(f())  # revealed: list[int | float]
+```
+
 Partially specialized type context is not ignored:
 
 ```py

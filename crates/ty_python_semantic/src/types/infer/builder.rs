@@ -5120,13 +5120,6 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             })
             .flatten()
             .collect::<Vec<_>>();
-        // Only specialize parameter types from the call's expected return type when there is a
-        // single candidate overload. Otherwise one overload's return type can "poison" the
-        // argument context for another; e.g. when inferring `dt.get(key, {"x": 0})`, using the
-        // assignment target to reverse-specialize multiple overloads can force the default
-        // argument toward `Unknown` instead of letting it infer from `{"x": 0}`.
-        let specialize_parameter_types_from_return_tcx = overloads_with_binding.len() == 1;
-
         // Each type is a valid independent inference of the given argument, and we may require
         // different permutations of argument types to correctly perform argument expansion during
         // overload evaluation, so we take the intersection of all the types we inferred for each
@@ -5152,6 +5145,28 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 *argument_type = Some(self.infer_type_expression(ast_argument));
                 continue;
             }
+
+            // Reverse-specializing from the call's expected result type is useful when the
+            // current argument position participates in every candidate overload's type
+            // variables, but it can overfit other overloads when some candidates have a fixed
+            // parameter type at this position (for example, `dict.get(..., default)`).
+            let specialize_parameter_types_from_return_tcx =
+                overloads_with_binding.iter().all(|(overload, binding)| {
+                    let argument_index = if binding.bound_type.is_some() {
+                        argument_index + 1
+                    } else {
+                        argument_index
+                    };
+
+                    let argument_matches = &overload.argument_matches()[argument_index];
+                    let [parameter_index] = argument_matches.parameters.as_slice() else {
+                        return false;
+                    };
+
+                    overload.signature.parameters()[*parameter_index]
+                        .annotated_type()
+                        .has_typevar(db)
+                });
 
             // Retrieve the parameter type for the current argument in a given overload and its binding.
             let parameter_type = |overload: &Binding<'db>, binding: &CallableBinding<'db>| {

@@ -191,7 +191,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
                 let (field_ty, _) = self.known_typed_dict_field_for_key(value_type, key)?;
                 Some(self.infer_typed_dict_known_key_default(default_arg, field_ty, true))
             }
-            ("get", [_]) | ("pop", [_]) | ("setdefault", [_, _]) => None,
+            ("get" | "pop", [_]) | ("setdefault", [_, _]) => None,
             _ => return None,
         };
 
