@@ -22,7 +22,7 @@ use crate::types::constraints::{
 };
 use crate::types::function::{AbstractMethodKind, DataclassTransformerParams};
 use crate::types::generics::{
-    GenericContext, InferableTypeVars, Specialization, walk_specialization,
+    GenericContext, InferableTypeVars, RespectTypeVarDefaults, Specialization, walk_specialization,
 };
 use crate::types::known_instance::DeprecatedInstance;
 use crate::types::member::Member;
@@ -646,7 +646,16 @@ impl<'db> ClassLiteral<'db> {
     /// Returns the top materialization for this class.
     pub(crate) fn top_materialization(self, db: &'db dyn Db) -> ClassType<'db> {
         match self {
-            Self::Static(class) => class.top_materialization(db),
+            Self::Static(class) => class.top_materialization(db, RespectTypeVarDefaults::No),
+            Self::Dynamic(_) | Self::DynamicNamedTuple(_) => ClassType::NonGeneric(self),
+        }
+    }
+
+    /// Returns a materialization that uses the default type for any `TypeVar`s with defaults,
+    /// but uses the top materialization specialization for all other `TypeVar`s.
+    pub(crate) fn top_materialization_respecting_defaults(self, db: &'db dyn Db) -> ClassType<'db> {
+        match self {
+            Self::Static(class) => class.top_materialization(db, RespectTypeVarDefaults::Yes),
             Self::Dynamic(_) | Self::DynamicNamedTuple(_) => ClassType::NonGeneric(self),
         }
     }

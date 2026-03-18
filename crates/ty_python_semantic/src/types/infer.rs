@@ -905,6 +905,11 @@ bitflags::bitflags! {
         /// are an error. It is unset in other contexts (e.g., `TypeVar` defaults, explicit class
         /// specialization) where unbound type variables are expected.
         const CHECK_UNBOUND_TYPEVARS = 1 << 1;
+
+        /// Apply top materialization specializations to class literals in type expressions,
+        /// rather than default specializations. This flag is only set when inferring
+        /// bracketed types inside `ty_extensions.Top[]`.
+        const TOP_MATERIALIZE_CLASSES = 1 << 2;
     }
 }
 

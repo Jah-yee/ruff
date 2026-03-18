@@ -4873,7 +4873,15 @@ impl<'db> Type<'db> {
                 let ty = match class.known(db) {
                     Some(KnownClass::Complex) => KnownUnion::Complex.to_type(db),
                     Some(KnownClass::Float) => KnownUnion::Float.to_type(db),
-                    _ => Type::instance(db, class.default_specialization(db)),
+                    _ => {
+                        let specialized =
+                            if inference_flags.contains(InferenceFlags::TOP_MATERIALIZE_CLASSES) {
+                                class.top_materialization_respecting_defaults(db)
+                            } else {
+                                class.default_specialization(db)
+                            };
+                        Type::instance(db, specialized)
+                    }
                 };
                 Ok(ty)
             }

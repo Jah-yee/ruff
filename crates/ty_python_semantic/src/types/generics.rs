@@ -783,10 +783,14 @@ impl<'db> GenericContext<'db> {
     ///
     /// This is used for top-materializing unparameterized generic classes, where we want the
     /// widest possible type for each type parameter position, rather than the typevar's default.
-    pub(crate) fn top_materialization_specialization(
+    ///
+    /// If `respect_typevar_defaults` is [`RespectTypeVarDefaults::Yes`], then for any typevar
+    /// with a default type, we will use the default type instead of the upper bound.
+    pub(super) fn top_materialization_specialization(
         self,
         db: &'db dyn Db,
         known_class: Option<KnownClass>,
+        respect_typevar_defaults: RespectTypeVarDefaults,
     ) -> Specialization<'db> {
         let mut has_dynamic_invariant_typevar = false;
 
@@ -795,6 +799,11 @@ impl<'db> GenericContext<'db> {
             .map(|typevar| {
                 if typevar.is_paramspec(db) {
                     return Type::paramspec_value_callable(db, Parameters::top());
+                }
+                if respect_typevar_defaults.is_yes()
+                    && let Some(default) = typevar.typevar(db).default_type(db)
+                {
+                    return default;
                 }
                 match typevar.variance(db) {
                     TypeVarVariance::Covariant | TypeVarVariance::Bivariant => {
@@ -1014,6 +1023,26 @@ impl<'db> GenericContext<'db> {
         I::IntoIter: ExactSizeIterator,
     {
         Specialization::new(db, self, self.fill_in_defaults(db, types), None, None)
+    }
+}
+
+/// Whether or not to respect `TypeVar` defaults when applying the top-materialization
+/// specialization to a class.
+///
+/// You almost always do *not* want to respect `TypeVar` defaults -- as of 18/3/2026,
+/// the only known location where it makes sense to do so is when inferring the
+/// meaning of `Top[Foo]` in a type expression, where `Foo` is generic over one or more
+/// type variables with defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum RespectTypeVarDefaults {
+    Yes,
+    #[default]
+    No,
+}
+
+impl RespectTypeVarDefaults {
+    const fn is_yes(self) -> bool {
+        matches!(self, Self::Yes)
     }
 }
 
@@ -1280,19 +1309,19 @@ impl<'db> Specialization<'db> {
         if self.materialization_kind(db).is_some() {
             return self;
         }
-
         let mut has_dynamic_invariant_typevar = false;
-
         let types: Box<[_]> = self
             .generic_context(db)
             .variables(db)
             .zip(self.types(db))
             .map(|(bound_typevar, vartype)| {
-                let variance = bound_typevar.variance(db);
-                let mut materialized = match variance {
-                    // With bivariance, all specializations are subtypes of each other,
-                    // so any materialization is acceptable.
-                    TypeVarVariance::Bivariant | TypeVarVariance::Covariant => {
+                match bound_typevar.variance(db) {
+                    TypeVarVariance::Bivariant => {
+                        // With bivariance, all specializations are subtypes of each other,
+                        // so any materialization is acceptable.
+                        vartype.materialize(db, MaterializationKind::Top, visitor)
+                    }
+                    TypeVarVariance::Covariant => {
                         vartype.materialize(db, materialization_kind, visitor)
                     }
                     TypeVarVariance::Contravariant => {
@@ -1306,32 +1335,9 @@ impl<'db> Specialization<'db> {
                         }
                         *vartype
                     }
-                };
-
-                if matches!(
-                    (materialization_kind, variance),
-                    (
-                        MaterializationKind::Top,
-                        TypeVarVariance::Covariant | TypeVarVariance::Bivariant
-                    ) | (MaterializationKind::Bottom, TypeVarVariance::Contravariant)
-                ) && let Some(bounds) = bound_typevar.typevar(db).bound_or_constraints(db)
-                {
-                    materialized = IntersectionType::from_two_elements(
-                        db,
-                        materialized,
-                        match bounds {
-                            TypeVarBoundOrConstraints::UpperBound(bound) => bound,
-                            TypeVarBoundOrConstraints::Constraints(constraints) => {
-                                constraints.as_type(db)
-                            }
-                        },
-                    );
                 }
-
-                materialized
             })
             .collect();
-
         let tuple_inner = self.tuple_inner(db).and_then(|tuple| {
             // Tuples are immutable, so tuple element types are always in covariant position.
             tuple.apply_type_mapping_impl(
@@ -1341,13 +1347,11 @@ impl<'db> Specialization<'db> {
                 visitor,
             )
         });
-
         let new_materialization_kind = if has_dynamic_invariant_typevar {
             Some(materialization_kind)
         } else {
             None
         };
-
         Specialization::new(
             db,
             self.generic_context(db),

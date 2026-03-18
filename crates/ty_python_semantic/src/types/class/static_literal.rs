@@ -46,7 +46,7 @@ use crate::{
             DataclassTransformerParams, KnownFunction, is_implicit_classmethod,
             is_implicit_staticmethod,
         },
-        generics::Specialization,
+        generics::{RespectTypeVarDefaults, Specialization},
         infer::infer_unpack_types,
         infer_expression_type,
         known_instance::DeprecatedInstance,
@@ -377,9 +377,17 @@ impl<'db> StaticClassLiteral<'db> {
         })
     }
 
-    pub(crate) fn top_materialization(self, db: &'db dyn Db) -> ClassType<'db> {
+    pub(super) fn top_materialization(
+        self,
+        db: &'db dyn Db,
+        respect_typevar_defaults: RespectTypeVarDefaults,
+    ) -> ClassType<'db> {
         self.apply_specialization(db, |generic_context| {
-            generic_context.top_materialization_specialization(db, self.known(db))
+            generic_context.top_materialization_specialization(
+                db,
+                self.known(db),
+                respect_typevar_defaults,
+            )
         })
     }
 

@@ -1679,11 +1679,21 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
                     std::slice::from_ref(arguments_slice)
                 };
                 let num_arguments = arguments.len();
-                let arg = if num_arguments == 1 {
-                    self.infer_type_expression(&arguments[0])
+
+                let previous_top_materialize_classes = self
+                    .inference_flags
+                    .replace(InferenceFlags::TOP_MATERIALIZE_CLASSES, true);
+                let ty = self.infer_type_expression(&arguments[0]);
+                self.inference_flags.set(
+                    InferenceFlags::TOP_MATERIALIZE_CLASSES,
+                    previous_top_materialize_classes,
+                );
+
+                if num_arguments == 1 {
+                    ty.top_materialization(db)
                 } else {
-                    for argument in arguments {
-                        self.infer_type_expression(argument);
+                    for argument in &arguments[1..] {
+                        self.infer_expression(argument, TypeContext::default());
                     }
                     report_invalid_argument_number_to_special_form(
                         &self.context,
@@ -1693,8 +1703,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
                         1,
                     );
                     Type::unknown()
-                };
-                arg.top_materialization(db)
+                }
             }
             SpecialFormType::Bottom => {
                 let arguments = if let ast::Expr::Tuple(tuple) = arguments_slice {
