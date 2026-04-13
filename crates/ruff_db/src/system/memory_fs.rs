@@ -471,7 +471,7 @@ fn not_a_directory() -> std::io::Error {
 }
 
 fn directory_not_empty() -> std::io::Error {
-    std::io::Error::other("directory not empty")
+    std::io::Error::new(std::io::ErrorKind::DirectoryNotEmpty, "directory not empty")
 }
 
 fn invalid_utf8() -> std::io::Error {
