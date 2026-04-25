@@ -352,6 +352,62 @@ fn parse_nested_placeholders(mut text: &str) -> Result<Vec<FormatPart>, FormatSp
     Ok(placeholders)
 }
 
+/// Parse a Python escape sequence at the start of a format spec string.
+/// For example, `\x64` is parsed as character 'd' (ASCII 100).
+/// Returns the parsed character and the remaining text, or `None` if no escape sequence.
+fn parse_python_escape_in_format_spec(text: &str) -> Option<(char, &str)> {
+    if !text.starts_with('\\') {
+        return None;
+    }
+    let rest = &text[1..];
+    let mut chars = rest.chars();
+    match chars.next()? {
+        'x' => {
+            // \xNN - exactly 2 hex digits
+            let hex: String = chars.by_ref().take(2).collect();
+            if hex.len() == 2 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                u8::from_str_radix(&hex, 16)
+                    .ok()
+                    .and_then(|b| char::from_u32(b as u32))
+                    .map(|ch| (ch, chars.as_str()))
+            } else {
+                None
+            }
+        }
+        'N' => {
+            // \N{name} - named unicode escape, not a format type
+            None
+        }
+        'u' | 'U' => {
+            // \uNNNN or \UNNNNNNNN - unicode escapes
+            let len = if rest.starts_with('u') { 4 } else { 8 };
+            let hex: String = rest.chars().skip(1).take(len).collect();
+            if hex.len() == len && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                u32::from_str_radix(&hex, 16)
+                    .ok()
+                    .and_then(char::from_u32)
+                    .map(|ch| (ch, &rest[1 + len..]))
+            } else {
+                None
+            }
+        }
+        '0'..='7' => {
+            // \ooo - up to 3 octal digits
+            let first = rest.chars().next().unwrap();
+            let oct_str = std::iter::once(first)
+                .chain(chars.by_ref().take(2))
+                .take_while(|c| c.is_ascii_digit() && *c <= '7')
+                .collect::<String>();
+            let oct_len = oct_str.len();
+            u8::from_str_radix(&oct_str, 8)
+                .ok()
+                .and_then(|b| char::from_u32(b as u32))
+                .map(|ch| (ch, &rest[oct_len..]))
+        }
+        _ => None,
+    }
+}
+
 impl FormatSpec {
     pub fn parse(text: &str) -> Result<Self, FormatSpecError> {
         let placeholders = parse_nested_placeholders(text)?;
@@ -368,19 +424,27 @@ impl FormatSpec {
         let (grouping_option, text) = FormatGrouping::parse(text);
         let (precision, text) = parse_precision(text)?;
 
-        let (format_type, _text) = if text.is_empty() {
-            (None, text)
+        // Handle Python escape sequences in the format spec (e.g., `\x64` -> 'd')
+        // This matches Python's behavior where `f"{1:\x64}"` produces '1' (\x64 = 'd')
+        let processed_text: String = if let Some((ch, rest)) = parse_python_escape_in_format_spec(text) {
+            format!("{}{}", ch, rest)
+        } else {
+            text.to_owned()
+        };
+
+        let (format_type, _text) = if processed_text.is_empty() {
+            (None, processed_text)
         } else {
             // If there's any remaining text, we should yield a valid format type and consume it
             // all.
-            let (format_type, text) = FormatType::parse(text);
+            let (format_type, remaining) = FormatType::parse(&processed_text);
             if format_type.is_none() {
                 return Err(FormatSpecError::InvalidFormatType);
             }
-            if !text.is_empty() {
+            if !remaining.is_empty() {
                 return Err(FormatSpecError::InvalidFormatSpecifier);
             }
-            (format_type, text)
+            (format_type, processed_text)
         };
 
         if zero && fill.is_none() {
@@ -995,6 +1059,37 @@ mod tests {
         );
         assert_eq!(
             FormatSpec::parse("z"),
+            Err(FormatSpecError::InvalidFormatType)
+        );
+    }
+
+    #[test]
+    fn test_format_python_escape_in_spec() {
+        // Regression test for https://github.com/astral-sh/ruff/issues/23360
+        // `f"{1:\x64}"` should parse as format spec "d" (decimal), producing "1"
+        // The \x64 escape should be resolved before format type parsing
+        assert_eq!(
+            FormatSpec::parse("\\x64"),
+            Ok(FormatSpec::Static(StaticFormatSpec {
+                conversion: None,
+                fill: None,
+                align: None,
+                sign: None,
+                alternate_form: false,
+                width: None,
+                grouping_option: None,
+                precision: None,
+                format_type: Some(FormatType::Decimal),
+            }))
+        );
+        // \x48 -> 'H', format spec "H" is invalid (not a format type)
+        assert_eq!(
+            FormatSpec::parse("\\x48"),
+            Err(FormatSpecError::InvalidFormatType)
+        );
+        // \x7e -> '~', format spec "~" is not a valid type → InvalidFormatType
+        assert_eq!(
+            FormatSpec::parse("\\x7e"),
             Err(FormatSpecError::InvalidFormatType)
         );
     }
