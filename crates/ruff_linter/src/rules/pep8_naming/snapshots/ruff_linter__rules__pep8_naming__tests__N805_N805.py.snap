@@ -1,5 +1,6 @@
 ---
 source: crates/ruff_linter/src/rules/pep8_naming/mod.rs
+assertion_line: 88
 ---
 N805 [*] First argument of a method should be named `self`
  --> N805.py:7:20
@@ -294,3 +295,45 @@ N805 First argument of a method should be named `self`
 142 |         self = 123
     |
 help: Rename `this` to `self`
+
+N805 First argument of a method should be named `self`
+   --> N805.py:148:20
+    |
+146 | # Decorator factory: first param used in nested function (closure) - fix should NOT be provided
+147 | class DecoratorFactoryClass:
+148 |     def is_support(ignore_owner: bool = False):
+    |                    ^^^^^^^^^^^^^^^^^^
+149 |         async def predicate(ctx) -> bool:
+150 |             return ignore_owner
+    |
+help: Rename `ignore_owner` to `self`
+
+N805 First argument of a method should be named `self`
+   --> N805.py:153:22
+    |
+151 |         return predicate
+152 |
+153 |     def with_closure(param):
+    |                      ^^^^^
+154 |         def inner():
+155 |             print(param)
+    |
+help: Rename `param` to `self`
+
+N805 [*] First argument of a method should be named `self`
+   --> N805.py:158:20
+    |
+156 |         return inner
+157 |
+158 |     def no_closure(ignored):
+    |                    ^^^^^^^
+159 |         pass
+    |
+help: Rename `ignored` to `self`
+155 |             print(param)
+156 |         return inner
+157 |
+    -     def no_closure(ignored):
+158 +     def no_closure(self):
+159 |         pass
+note: This is an unsafe fix and may change runtime behavior

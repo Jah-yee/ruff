@@ -313,6 +313,22 @@ fn rename_parameter(
         return Ok(None);
     }
 
+    // Don't provide autofix if the first parameter is referenced in a nested function
+    // (i.e., the reference scope is a descendant of the current function scope).
+    // Renaming it would break the closure capture.
+    let binding_scope_id = binding.scope;
+    for reference_id in binding.references() {
+        let reference = semantic.reference(reference_id);
+        let ref_scope_id = reference.scope_id();
+        // If the reference scope is a strict descendant of the binding scope,
+        // then the parameter is captured by a nested function.
+        if ref_scope_id != binding_scope_id
+            && semantic.scopes.ancestor_ids(ref_scope_id).any(|ancestor| ancestor == binding_scope_id)
+        {
+            return Ok(None);
+        }
+    }
+
     let (edit, rest) = Renamer::rename(
         &self_or_cls.name,
         function_type.valid_first_argument_name(),

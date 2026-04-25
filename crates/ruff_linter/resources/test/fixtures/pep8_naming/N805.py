@@ -140,3 +140,20 @@ class MyProtocolMeta(type(Protocol)):
 class C:
     def f(this):
         self = 123
+
+
+# https://github.com/astral-sh/ruff/issues/24827
+# Decorator factory: first param used in nested function (closure) - fix should NOT be provided
+class DecoratorFactoryClass:
+    def is_support(ignore_owner: bool = False):
+        async def predicate(ctx) -> bool:
+            return ignore_owner
+        return predicate
+
+    def with_closure(param):
+        def inner():
+            print(param)
+        return inner
+
+    def no_closure(ignored):
+        pass
