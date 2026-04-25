@@ -140,3 +140,17 @@ class MyProtocolMeta(type(Protocol)):
 class C:
     def f(this):
         self = 123
+
+
+# https://github.com/astral-sh/ruff/issues/24827
+# Decorator factory: N805 fix should be display-only when param is captured by closure
+class DecoratorFactory:
+    def my_decorator(this, arg1):
+        def inner():
+            return this + arg1  # `this` captured in nested function
+        return inner
+
+    def another_decorator(cls, arg2):
+        def method():
+            return cls  # `cls` captured in nested function
+        return method

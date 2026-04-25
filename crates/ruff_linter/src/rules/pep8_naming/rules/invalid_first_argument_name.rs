@@ -12,7 +12,7 @@ use ruff_text_size::{Ranged, TextRange};
 use crate::checkers::ast::{Checker, DiagnosticGuard};
 use crate::registry::Rule;
 use crate::renamer::{Renamer, ShadowedKind};
-use crate::{Fix, Violation};
+use crate::{Applicability, Fix, Violation};
 
 /// ## What it does
 /// Checks for instance methods that use a name other than `self` for their
@@ -313,6 +313,23 @@ fn rename_parameter(
         return Ok(None);
     }
 
+    // Check if the parameter is referenced in a nested function (closure).
+    // If so, renaming it to `self` would be dangerous because the closure captures it.
+    // Example:
+    //   def outer(cls):  # N805 fires here
+    //       def inner():  # closure captures `cls`
+    //           use(cls)
+    // In this case, use `DisplayOnly` instead of `Unsafe` fix.
+    let is_captured = scope
+        .get_all(&self_or_cls.name)
+        .any(|binding_id| {
+            let binding = semantic.binding(binding_id);
+            binding.references().any(|ref_id| {
+                let reference = semantic.reference(ref_id);
+                reference.scope_id() != semantic.scope_id
+            })
+        });
+
     let (edit, rest) = Renamer::rename(
         &self_or_cls.name,
         function_type.valid_first_argument_name(),
@@ -320,5 +337,13 @@ fn rename_parameter(
         semantic,
         stylist,
     )?;
-    Ok(Some(Fix::unsafe_edits(edit, rest)))
+
+    // If captured by nested function, the fix is display-only (very dangerous).
+    // Otherwise, it's marked unsafe (user must opt-in via --unsafe-fixes).
+    let applicability = if is_captured {
+        Applicability::DisplayOnly
+    } else {
+        Applicability::Unsafe
+    };
+    Ok(Some(Fix::applicable_edits(edit, rest, applicability)))
 }
